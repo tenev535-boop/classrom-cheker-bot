@@ -54,6 +54,9 @@ mark { background: color-mix(in srgb, var(--warn) 30%, transparent); color: var(
 .panel ul { list-style: none; margin: 0; padding: 0; }
 .count { font-family: var(--mono); color: var(--muted); font-size: 12px; }
 @media (prefers-reduced-motion: reduce) { .link { transition: none; } .link:hover { transform: none; } }
+pre.code { margin: 0; max-height: 260px; overflow: auto; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 12px; font: 12px/1.5 var(--mono); color: var(--fg); }
+ol.steps { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; color: var(--muted); font-size: 14px; line-height: 1.45; }
+ol.steps code, .hint code { color: var(--fg); }
 </style>
 
 <div class="wrap">
@@ -116,6 +119,81 @@ mark { background: color-mix(in srgb, var(--warn) 30%, transparent); color: var(
     </div>
     <div class="panel"><ul id="shkHits"></ul></div>
     <p class="hint">Филтър: „час“, „кабинет“, „промяна“, „заместник“, „няма да има“. Резултатът се пази в браузъра.</p>
+  </section>
+
+  <section aria-labelledby="h-sync">
+    <h2 id="h-sync">Автоматична синхронизация</h2>
+    <div class="row" style="justify-content:space-between">
+      <span id="syncStatus"><span class="pill warn">Изчаква UserScript</span></span>
+      <button type="button" id="copyUs">Копирай скрипта</button>
+    </div>
+    <ol class="steps">
+      <li>Инсталирай Tampermonkey и създай нов скрипт с кода по-долу.</li>
+      <li>Отвори този дашборд локално: <code>http://localhost:8000/dashboard.html</code> (напр. <code>python3 -m http.server</code>) или като файл, с разрешен достъп до файлове за Tampermonkey.</li>
+      <li>Дръж отворен таб с Школо. На всеки 44 мин се опреснява и новите редове идват тук сами.</li>
+    </ol>
+    <pre class="code" id="usCode">// ==UserScript==
+// @name         Школо → Училищен дашборд
+// @namespace    local.school-dash
+// @version      1.0
+// @description  Опреснява Школо на 44 мин, филтрира важните редове и ги подава на локалния дашборд.
+// @match        https://app.shkolo.bg/*
+// @match        http://localhost/*
+// @match        http://127.0.0.1/*
+// @match        file:///*dashboard.html
+// @grant        GM_setValue
+// @grant        GM_getValue
+// @grant        GM_addValueChangeListener
+// @run-at       document-idle
+// @noframes
+// ==/UserScript==
+
+(function () {
+  &quot;use strict&quot;;
+
+  const STORE = &quot;shkolo-sync&quot;;
+  const RELOAD_MS = 44 * 60 * 1000;
+  const SETTLE_MS = 4000; // Школо дорисува съдържание след зареждане
+  const RX = /((?&lt;!\p{L})час(?:а|ът|ове|овете)?(?!\p{L})|кабинет\p{L}*|промен\p{L}*|промяна|замест\p{L}*|няма да има)/iu;
+
+  // ---------- Страна „Школо“: извличане, филтър, опресняване ----------
+  if (location.hostname.endsWith(&quot;shkolo.bg&quot;)) {
+    const extract = () =&gt; {
+      const seen = new Set();
+      const lines = (document.body.innerText || &quot;&quot;)
+        .split(/\r?\n/)
+        .map((l) =&gt; l.replace(/\s+/g, &quot; &quot;).trim())
+        .filter((l) =&gt; l &amp;&amp; l.length &lt;= 300 &amp;&amp; RX.test(l) &amp;&amp; !seen.has(l) &amp;&amp; seen.add(l));
+      GM_setValue(STORE, { lines, ts: Date.now(), source: location.pathname });
+    };
+
+    const reload = () =&gt; {
+      // Не прекъсвай, ако в момента пишеш в поле
+      const a = document.activeElement;
+      if (a &amp;&amp; (a.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName))) {
+        setTimeout(reload, 60 * 1000);
+        return;
+      }
+      location.reload();
+    };
+
+    setTimeout(extract, SETTLE_MS);
+    setTimeout(reload, RELOAD_MS);
+    return;
+  }
+
+  // ---------- Страна „Дашборд“: подаване на данните към страницата ----------
+  if (!document.getElementById(&quot;shkolo&quot;)) return; // не е нашият дашборд
+
+  const push = (data) =&gt; {
+    if (!data || !Array.isArray(data.lines)) return;
+    window.postMessage({ type: &quot;shkolo-sync&quot;, lines: data.lines, ts: data.ts }, &quot;*&quot;);
+  };
+
+  push(GM_getValue(STORE, null));
+  GM_addValueChangeListener(STORE, (_key, _old, data) =&gt; push(data));
+})();
+</pre>
   </section>
 </div>
 
@@ -237,12 +315,37 @@ mark { background: color-mix(in srgb, var(--warn) 30%, transparent); color: var(
   }
   shk.value = shkData.text || "";
   shk.addEventListener("input", () => {
-    shkData = { text: shk.value, hits: filterShkolo(shk.value) };
+    shkData = { text: shk.value, hits: filterShkolo(shk.value), syncTs: shkData.syncTs };
     try { localStorage.setItem(SHK_KEY, JSON.stringify(shkData)); } catch (e) {}
     renderShkolo();
   });
   $("shkClear").addEventListener("click", () => { shk.value = ""; shk.dispatchEvent(new Event("input")); });
   renderShkolo();
+
+  // Канал за синхронизация: приема {type:"shkolo-sync", lines:[...], ts} от UserScript-а в същия прозорец
+  function renderSync() {
+    if (!shkData.syncTs) return;
+    const t = new Date(shkData.syncTs);
+    $("syncStatus").innerHTML = '<span class="pill">Синхронизирано ' + pad(t.getHours()) + ":" + pad(t.getMinutes()) + " · " + t.toLocaleDateString("bg-BG") + "</span>";
+  }
+  window.addEventListener("message", e => {
+    const d = e.data;
+    if (e.source !== window || !d || d.type !== "shkolo-sync" || !Array.isArray(d.lines)) return;
+    const ts = Number(d.ts) || Date.now();
+    if (shkData.syncTs && ts <= shkData.syncTs) return;
+    const lines = d.lines.filter(l => typeof l === "string").map(l => l.slice(0, 300)).slice(0, 200);
+    shkData = { text: lines.join("\n"), hits: filterShkolo(lines.join("\n")), syncTs: ts };
+    shk.value = shkData.text;
+    try { localStorage.setItem(SHK_KEY, JSON.stringify(shkData)); } catch (e) {}
+    renderShkolo(); renderSync();
+  });
+  $("copyUs").addEventListener("click", e => {
+    const b = e.target, txt = $("usCode").textContent;
+    const done = () => { b.textContent = "Копирано"; setTimeout(() => b.textContent = "Копирай скрипта", 1500); };
+    const fallback = () => { const r = document.createRange(); r.selectNodeContents($("usCode")); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); b.textContent = "Избрано, натисни Ctrl+C"; };
+    try { navigator.clipboard.writeText(txt).then(done, fallback); } catch (err) { fallback(); }
+  });
+  renderSync();
 
   renderNotes();
   render();

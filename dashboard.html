@@ -40,6 +40,20 @@ textarea { min-height: 150px; resize: vertical; }
 mark { background: color-mix(in srgb, var(--warn) 30%, transparent); color: var(--fg); border-radius: 3px; padding: 0 2px; }
 .empty { color: var(--muted); font-style: italic; }
 @media (prefers-reduced-motion: reduce) { .bar > div { transition: none; } }
+.links { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+@media (max-width: 360px) { .links { grid-template-columns: 1fr; } }
+.link { display: flex; flex-direction: column; gap: 4px; padding: 14px; border-radius: 12px; text-decoration: none; color: var(--fg); background: var(--bg); border: 1px solid var(--line); transition: border-color .2s, transform .2s; }
+.link:hover { border-color: var(--accent); transform: translateY(-1px); }
+.link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.link b { font-size: 16px; }
+.link span { color: var(--muted); font-size: 13px; }
+.link b::after { content: " ↗"; color: var(--accent); }
+.panel { background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 4px 12px; }
+.panel li { padding: 10px 0; border-top: 1px solid var(--line); line-height: 1.45; overflow-wrap: anywhere; }
+.panel li:first-child { border-top: 0; }
+.panel ul { list-style: none; margin: 0; padding: 0; }
+.count { font-family: var(--mono); color: var(--muted); font-size: 12px; }
+@media (prefers-reduced-motion: reduce) { .link { transition: none; } .link:hover { transform: none; } }
 </style>
 
 <div class="wrap">
@@ -83,6 +97,25 @@ mark { background: color-mix(in srgb, var(--warn) 30%, transparent); color: var(
     </div>
     <p class="hint">Показват се само редовете с „промяна“, „заместник“ или „кабинет“.</p>
     <ul class="hits" id="hits"></ul>
+  </section>
+
+  <section aria-labelledby="h-gc">
+    <h2 id="h-gc">Google Classroom Hub</h2>
+    <div class="links">
+      <a class="link" href="https://classroom.google.com" target="_blank" rel="noopener noreferrer"><b>Classroom</b><span>Всички класове</span></a>
+      <a class="link" href="https://classroom.google.com/u/0/h" target="_blank" rel="noopener noreferrer"><b>Задачи</b><span>Списък със задачи</span></a>
+    </div>
+  </section>
+
+  <section aria-labelledby="h-shk">
+    <h2 id="h-shk">Школо Информационен Панел</h2>
+    <textarea id="shkolo" placeholder="Постави тук текст, копиран от Школо…" spellcheck="false"></textarea>
+    <div class="row" style="justify-content:space-between">
+      <span class="count" id="shkCount"></span>
+      <button type="button" id="shkClear">Изчисти</button>
+    </div>
+    <div class="panel"><ul id="shkHits"></ul></div>
+    <p class="hint">Филтър: „час“, „кабинет“, „промяна“, „заместник“, „няма да има“. Резултатът се пази в браузъра.</p>
   </section>
 </div>
 
@@ -185,6 +218,31 @@ mark { background: color-mix(in srgb, var(--warn) 30%, transparent); color: var(
     if (!b.hidden) notes.focus();
   });
   $("clearNotes").addEventListener("click", () => { notes.value = ""; onNotes(); });
+
+  // Школо: филтър ред по ред; „час“ само като отделна дума или „часа/часове“, не „часовник“
+  const SHK_KEY = "school-dash-shkolo";
+  const SHK_RX = /((?<!\p{L})час(?:а|ът|ове|овете)?(?!\p{L})|кабинет\p{L}*|промен\p{L}*|промяна|замест\p{L}*|няма да има)/giu;
+  const shk = $("shkolo");
+  let shkData = { text: "", hits: [] };
+  try { const d = JSON.parse(localStorage.getItem(SHK_KEY)); if (d) shkData = d; } catch (e) {}
+  function filterShkolo(text) {
+    return text.split(/\r?\n/).map(l => l.trim()).filter(l => { SHK_RX.lastIndex = 0; return l && SHK_RX.test(l); });
+  }
+  function renderShkolo() {
+    const h = shkData.hits;
+    $("shkCount").textContent = h.length ? h.length + (h.length === 1 ? " важен ред" : " важни реда") : "";
+    $("shkHits").innerHTML = h.length
+      ? h.map(l => "<li>" + esc(l).replace(SHK_RX, "<mark>$1</mark>") + "</li>").join("")
+      : '<li class="empty">' + (shkData.text ? "Няма редове с ключови думи." : "Постави текст от бележника, за да видиш важното.") + "</li>";
+  }
+  shk.value = shkData.text || "";
+  shk.addEventListener("input", () => {
+    shkData = { text: shk.value, hits: filterShkolo(shk.value) };
+    try { localStorage.setItem(SHK_KEY, JSON.stringify(shkData)); } catch (e) {}
+    renderShkolo();
+  });
+  $("shkClear").addEventListener("click", () => { shk.value = ""; shk.dispatchEvent(new Event("input")); });
+  renderShkolo();
 
   renderNotes();
   render();
